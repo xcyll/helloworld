@@ -7,6 +7,7 @@ require "luci.http"
 require "luci.jsonc"
 require "luci.model.uci"
 local uci = require "luci.model.uci".cursor()
+local datatypes = require "luci.cbi.datatypes"
 
 local m, s, o
 
@@ -22,6 +23,10 @@ end
 
 local function is_installed(e)
 	return luci.model.ipkg.installed(e)
+end
+
+local function is_js_luci()
+	return luci.sys.call('[ -f "/www/luci-static/resources/uci.js" ]') == 0
 end
 
 -- 获取 Xray 版本号
@@ -44,6 +49,17 @@ if xray_version and xray_version ~= "" then
 	xray_version_val = major * 10000 + minor * 100 + patch
 end
 
+local function url(...)
+	local url = string.format("admin/services/%s", "shadowsocksr")
+	local args = { ... }
+	for i, v in ipairs(args) do
+		if v and v ~= "" then
+			url = url .. "/" .. v
+		end
+	end
+	return require "luci.dispatcher".build_url(url)
+end
+
 -- 默认的保存并应用行为
 local function apply_redirect(m)
 	local tmp_uci_file = "/etc/config/" .. "shadowsocksr" .. "_redirect"
@@ -64,7 +80,7 @@ local function apply_redirect(m)
 		m.on_after_save = function(self)
 			local redirect = self.redirect
 			if redirect and redirect ~= "" then
-				uci:set("shadowsocksr" .. "_redirect", "@redirect[0]", "url", redirect)
+				m.uci:set("shadowsocksr" .. "_redirect", "@redirect[0]", "url", redirect)
 			end
 		end
 	else
@@ -72,17 +88,23 @@ local function apply_redirect(m)
 	end
 end
 
+local function set_apply_on_parse(map)
+	if not map then return end
+	if is_js_luci() then
+		apply_redirect(map)
+		local old = map.on_after_save
+		map.on_after_save = function(self)
+			if old then old(self) end
+			map:set("@global[0]", "timestamp", os.time())
+		end
+	end
+end
+
 local has_xray = is_finded("xray")
 local has_hysteria2 = is_finded("hysteria")
 
--- 读取当前存储的 xray_hy2_type
-local xray_hy2_type = uci:get_first("shadowsocksr", "server_subscribe", "xray_hy2_type")
-
 local has_ss_rust = is_finded("sslocal") or is_finded("ssserver")
 local has_ss_libev = is_finded("ss-redir") or is_finded("ss-local")
-
--- 读取当前存储的 ss_type
-local ss_type = uci:get_first("shadowsocksr", "server_subscribe", "ss_type")
 
 local server_table = {}
 local encrypt_methods = {
@@ -188,13 +210,13 @@ local tls_flows = {
 }
 
 m = Map("shadowsocksr", translate("Edit ShadowSocksR Server"))
-m.redirect = luci.dispatcher.build_url("admin/services/shadowsocksr/servers")
-if m.uci:get("shadowsocksr", sid) ~= "servers" then
+m.redirect = url("servers")
+if not sid or m.uci:get("shadowsocksr", sid) ~= "servers" then
 	luci.http.redirect(m.redirect)
 	return
 end
 -- 保存&应用成功后跳转到节点列表
-apply_redirect(m)
+set_apply_on_parse(m)
 
 -- [[ Servers Setting ]]--
 s = m:section(NamedSection, sid, "servers")
@@ -207,40 +229,27 @@ o.template = "shadowsocksr/ssrurl"
 o.value = sid
 
 -- 新增一个选择框，用于选择 Xray 或 Hysteria2 核心
-o = s:option(ListValue, "xray_hy2_type", string.format("<b><span style='color:red;'>%s</span></b>", translatef("%s Node Use Type", "Hysteria2")))
+o = s:option(ListValue, "_xray_hy2_type", string.format("<b><span style='color:red;'>%s</span></b>", translatef("%s Node Use Type", "Hysteria2")))
 o.description = translate("The configured type also applies to the core specified when manually importing nodes.")
 -- 设置默认 Xray 或 Hysteria2 核心
 -- 动态添加选项
 if has_xray then
-	o:value("xray", translate("Xray"))
+	o:value("v2ray", translate("Xray (Hysteria2)"))
 end
 if has_hysteria2 then
 	o:value("hysteria2", translate("Hysteria2"))
 end
--- 设置默认值
-if xray_hy2_type == "xray" then
-	o.default = "xray"
-elseif xray_hy2_type == "hysteria2" then
-	o.default = "hysteria2"
+-- 读取全局 xray_hy2_type
+o.cfgvalue = function(self, section)
+    return self.map.uci:get("shadowsocksr", "@server_subscribe[0]", "xray_hy2_type") or "hysteria2"
 end
+o.rmempty = false
 o.write = function(self, section, value)
-	-- 更新 Hysteria 节点的 xray_hy2_type
-	uci:foreach("shadowsocksr", "servers", function(s)
-		local node_type = uci:get("shadowsocksr", s[".name"], "type")  -- 获取节点类型
-		if node_type == "hysteria2" then  -- 仅修改 Hysteria 节点
-			local old_value = uci:get("shadowsocksr", s[".name"], "xray_hy2_type")
-			if old_value ~= value then
-				uci:set("shadowsocksr", s[".name"], "xray_hy2_type", value)
-			end
-		end
-	end)
 	-- 更新 server_subscribe 的 xray_hy2_type
-	local old_value = uci:get("shadowsocksr", "server_subscribe", "xray_hy2_type")
+	local old_value = self.map.uci:get("shadowsocksr", "@server_subscribe[0]", "xray_hy2_type")
 	if old_value ~= value then
-        uci:set("shadowsocksr", "@server_subscribe[0]", "xray_hy2_type", value)
+        self.map.uci:set("shadowsocksr", "@server_subscribe[0]", "xray_hy2_type", value)
 	end
-	-- 更新当前 section 的 xray_hy2_type
-	ListValue.write(self, section, value)
 end
 
 o = s:option(ListValue, "type", translate("Server Node Type"))
@@ -289,7 +298,7 @@ o:depends("type", "tun")
 o.description = translate("Redirect traffic to this network interface")
 
 -- 新增一个选择框，用于选择 Shadowsocks 版本
-o = s:option(ListValue, "has_ss_type", string.format("<b><span style='color:red;'>%s</span></b>", translatef("%s Node Use Version", "ShadowSocks")))
+o = s:option(ListValue, "_has_ss_type", string.format("<b><span style='color:red;'>%s</span></b>", translatef("%s Node Use Version", "ShadowSocks")))
 o.description = translate("Selection ShadowSocks Node Use Version.")
 -- 设置默认 Shadowsocks 版本
 -- 动态添加选项
@@ -299,31 +308,18 @@ end
 if has_ss_libev then
 	o:value("ss-libev", translate("ShadowSocks-libev Version"))
 end
--- 设置默认值
-if ss_type == "ss-rust" then
-	o.default = "ss-rust"
-elseif ss_type == "ss-libev" then
-	o.default = "ss-libev"
+-- 读取全局 ss_type
+o.cfgvalue = function(self, section)
+    return self.map.uci:get("shadowsocksr", "@server_subscribe[0]", "ss_type") or "ss-rust"
 end
 o:depends("type", "ss")
+o.rmempty = false
 o.write = function(self, section, value)
-	-- 更新 Shadowsocks 节点的 has_ss_type
-	uci:foreach("shadowsocksr", "servers", function(s)
-		local node_type = uci:get("shadowsocksr", s[".name"], "type")  -- 获取节点类型
-		if node_type == "ss" then  -- 仅修改 Shadowsocks 节点
-			local old_value = uci:get("shadowsocksr", s[".name"], "has_ss_type")
-			if old_value ~= value then
-				uci:set("shadowsocksr", s[".name"], "has_ss_type", value)
-			end
-		end
-	end)
 	-- 更新 server_subscribe 的 ss_type
-	local old_value = uci:get("shadowsocksr", "server_subscribe", "ss_type")
+	local old_value = self.map.uci:get("shadowsocksr", "@server_subscribe[0]", "ss_type")
 	if old_value ~= value then
-		uci:set("shadowsocksr", "@server_subscribe[0]", "ss_type", value)
+		self.map.uci:set("shadowsocksr", "@server_subscribe[0]", "ss_type", value)
 	end
-	-- 更新当前 section 的 has_ss_type
-	ListValue.write(self, section, value)
 end
 
 o = s:option(ListValue, "v2ray_protocol", translate("V2Ray/XRay protocol"))
@@ -685,6 +681,21 @@ o.password = true
 o.rmempty = true
 o.default = ""
 o:depends("type", "tuic")
+
+--[[
+-- Tuic username for local socks connect
+o = s:option(Value, "tuic_socks_username", translate("TUIC UserName For Local Socks"))
+o.rmempty = true
+o.default = ""
+o:depends("type", "tuic")
+
+-- Tuic Password for local socks connect
+o = s:option(Value, "tuic_socks_password", translate("TUIC Password For Local Socks"))
+o.password = true
+o.rmempty = true
+o.default = ""
+o:depends("type", "tuic")
+--]]
 
 o = s:option(ListValue, "udp_relay_mode", translate("UDP relay mode"))
 o:depends("type", "tuic")
