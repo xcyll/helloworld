@@ -212,7 +212,7 @@ function import_ssr_url(btn, urlname, sid) {
 
 			var params = Object.fromEntries(new URLSearchParams(query));
 
-			if ( ! params.type) {
+			if ( ss_type !== "v2ray") {
 				// 普通 SS 导入逻辑
 				// 判断是否 SIP002 格式（即含 @）
 				if (url0.indexOf("@") !== -1) {
@@ -307,12 +307,12 @@ function import_ssr_url(btn, urlname, sid) {
 				}
 
 				// === 填充配置项 ===
-				var has_ss_type = (ss_type === "ss-rust") ? "ss-rust" : "ss-libev";
+				//var has_ss_type = (ss_type === "ss-rust") ? "ss-rust" : "ss-libev";
 
 				document.getElementsByName('cbid.shadowsocksr.' + sid + '.type')[0].value = ssu[0];
 				document.getElementsByName('cbid.shadowsocksr.' + sid + '.type')[0].dispatchEvent(event);
-				document.getElementsByName('cbid.shadowsocksr.' + sid + '.has_ss_type')[0].value = has_ss_type;
-				document.getElementsByName('cbid.shadowsocksr.' + sid + '.has_ss_type')[0].dispatchEvent(event);
+				//document.getElementsByName('cbid.shadowsocksr.' + sid + '.has_ss_type')[0].value = has_ss_type;
+				//document.getElementsByName('cbid.shadowsocksr.' + sid + '.has_ss_type')[0].dispatchEvent(event);
 				document.getElementsByName('cbid.shadowsocksr.' + sid + '.server')[0].value = server;
 				document.getElementsByName('cbid.shadowsocksr.' + sid + '.server_port')[0].value = port;
 				document.getElementsByName('cbid.shadowsocksr.' + sid + '.password')[0].value = password || "";
@@ -330,6 +330,11 @@ function import_ssr_url(btn, urlname, sid) {
 				} else {
 					document.getElementsByName('cbid.shadowsocksr.' + sid + '.enable_plugin')[0].checked = false;
 				}
+
+				//if (params.udp === "1") {
+				//	document.getElementsByName('cbid.shadowsocksr.' + sid + '.uot')[0].checked = true; // 设置 uot 为 true
+				//	document.getElementsByName('cbid.shadowsocksr.' + sid + '.uot')[0].dispatchEvent(event); // 触发事件
+				//}
 
 				if (params.tfo === "1") {
 					document.getElementsByName('cbid.shadowsocksr.' + sid + '.fast_open')[0].checked = true; // 设置 fast_open 为 true
@@ -394,6 +399,14 @@ function import_ssr_url(btn, urlname, sid) {
 				);
 				dispatchEventIfExists('cbid.shadowsocksr.' + sid + '.transport', event);
 				setElementValue('cbid.shadowsocksr.' + sid + '.encrypt_method_ss', method || params.encryption || "none");
+				if (params.udp === "1") {
+					setElementValue('cbid.shadowsocksr.' + sid + '.uot', true); // 设置 uot 为 true
+					dispatchEventIfExists('cbid.shadowsocksr.' + sid + '.uot', event); // 触发事件
+				}
+				if (params.tfo === "1") {
+					setElementValue('cbid.shadowsocksr.' + sid + '.fast_open', true); // 设置 fast_open 为 true
+					dispatchEventIfExists('cbid.shadowsocksr.' + sid + '.fast_open', event); // 触发事件
+				}
 				if ([ "tls", "xtls", "reality" ].includes(params.security)) {
 					setElementValue('cbid.shadowsocksr.' + sid + '.' + params.security, true);
 					dispatchEventIfExists('cbid.shadowsocksr.' + sid + '.' + params.security, event);
