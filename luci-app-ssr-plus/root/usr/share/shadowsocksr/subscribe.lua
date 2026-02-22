@@ -34,20 +34,34 @@ local ss_type = ucic:get_first(name, 'server_subscribe', 'ss_type', 'ss-rust')
 -- 根据 ss_type 选择对应的程序
 local ss_program = "sslocal"
 if ss_type == "ss-rust" then
-	ss_program = "sslocal"  -- Rust 版本使用 sslocal
+    ss_program = "sslocal"
 elseif ss_type == "ss-libev" then
-	ss_program = "ss-redir"  -- Libev 版本使用 ss-redir
+    ss_program = "ss-redir"
+elseif ss_type == "v2ray" then
+    ss_program = "xray"
 end
 -- 从 UCI 配置读取 xray_hy2_type 设置
 local xray_hy2_type = ucic:get_first(name, 'server_subscribe', 'xray_hy2_type', 'hysteria2')
 local xray_hy2_program = "hysteria"
-if xray_hy2_type == "xray" then
+if xray_hy2_type == "v2ray" then
 	xray_hy2_program = "xray"  -- Hysteria2 使用 Xray
 elseif xray_hy2_type == "hysteria2" then
 	xray_hy2_program = "hysteria"  -- Hysteria2 使用 Hysteria
 end
-local v2_ss = luci.sys.exec('type -t -p ' .. ss_program .. ' 2>/dev/null') ~= "" and "ss" or "v2ray"
-local has_ss_type = luci.sys.exec('type -t -p ' .. ss_program .. ' 2>/dev/null') ~= "" and ss_type
+local v2_ss_exists = luci.sys.exec('type -t -p ' .. ss_program .. ' 2>/dev/null') ~= ""
+-- 初始化变量
+local v2_ss = nil
+local has_v2_ss_type = nil
+if v2_ss_exists then
+    if ss_type == "v2ray" then
+        -- 使用 Xray
+        v2_ss = "v2ray"
+        has_v2_ss_type = "shadowsocks"
+    else
+        -- 使用 SS (rust 或 libev)
+        v2_ss = "ss"
+    end
+end
 local v2_tj = luci.sys.exec('type -t -p trojan') ~= "" and "trojan" or "v2ray"
 -- 检查程序是否存在
 local program_exists = luci.sys.exec('type -t -p ' .. xray_hy2_program .. ' 2>/dev/null') ~= ""
@@ -215,8 +229,8 @@ local function processData(szType, content)
 		--	log(k.."="..v)
 		-- end
 
-		-- 如果 hy2 程序未安装则跳过订阅
-		if not (hy2_type or has_xray_hy2_type) then
+		-- 如果 hy2 或 Xray 程序未安装则跳过订阅
+		if not hy2_type then
 			return nil
 		end
 	
@@ -233,7 +247,6 @@ local function processData(szType, content)
 		end
 
 		result.alias = url.fragment and UrlDecode(url.fragment) or nil
-		result.xray_hy2_type = xray_hy2_type
 		result.type = hy2_type
 		result.server = url.host
 		result.server_port = url.port or 443
@@ -490,7 +503,12 @@ local function processData(szType, content)
 			end
 		end
 
-		if not params.type or params.type == "" then
+		if params.tfo and params.tfo ~= "" then
+			-- 处理 fast open 参数
+			result.fast_open = params.tfo
+		end
+
+		if v2_ss ~= "v2ray" then
 			local is_old_format = find_index:find("@") and not find_index:find("://.*@")
 			local old_base64, host_port, userinfo, server, port, method, password
 
@@ -557,22 +575,16 @@ local function processData(szType, content)
 			end
 
 			-- 如果 SS 程序未安装则跳过订阅	
-			if not (v2_ss or has_ss_type) then
+			if not v2_ss then
 				return nil
 			end
 
 			-- 填充 result
 			result.type = v2_ss
-			result.has_ss_type = has_ss_type
 			result.encrypt_method_ss = method
 			result.password = password
 			result.server = server
 			result.server_port = port
-
-			if params.tfo then
-				-- 处理 fast open 参数
-				result.fast_open = params.tfo
-			end
 
 			-- 插件处理
 			if params.plugin then
@@ -638,9 +650,13 @@ local function processData(szType, content)
 			local url = URL.parse("http://" .. info)
 			local params = url.query
 
-			v2_ss = "v2ray"
+			-- 如果 Xray 程序未安装则跳过订阅	
+			if not v2_ss then
+				return nil
+			end
+
 			result.type = v2_ss
-			result.v2ray_protocol = "shadowsocks"
+			result.v2ray_protocol = has_v2_ss_type
 			result.server = url.host
 			result.server_port = url.port
 
@@ -653,6 +669,11 @@ local function processData(szType, content)
         		-- 旧格式：UUID 直接作为密码
         		result.password = url.user
         		result.encrypt_method_ss = params.encryption or "none"
+			end
+
+			if params.udp then
+        		-- 处理 udp 参数
+        		result.uot = params.udp
 			end
 
 			result.transport = params.type or "raw"
@@ -760,8 +781,12 @@ local function processData(szType, content)
 		end
 	elseif szType == "sip008" then
 		result.type = v2_ss
-		result.v2ray_protocol = (v2_ss == "v2ray") and "shadowsocks" or nil
-		result.has_ss_type = has_ss_type
+		if v2_ss ~= "v2ray" then
+			result.has_ss_type = has_ss_type
+		else
+			result.xray_has_ss_type = "v2ray"
+			result.v2ray_protocol = has_v2_ss_type
+		end
 		result.server = content.server
 		result.server_port = content.server_port
 		result.password = content.password
@@ -774,8 +799,12 @@ local function processData(szType, content)
 		end
 	elseif szType == "ssd" then
 		result.type = v2_ss
-		result.v2ray_protocol = (v2_ss == "v2ray") and "shadowsocks" or nil
-		result.has_ss_type = has_ss_type
+		if v2_ss ~= "v2ray" then
+			result.has_ss_type = has_ss_type
+		else
+			result.xray_has_ss_type = "v2ray"
+			result.v2ray_protocol = has_v2_ss_type
+		end
 		result.server = content.server
 		result.server_port = content.port
 		result.password = content.password
